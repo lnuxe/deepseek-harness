@@ -692,4 +692,88 @@ describe('SystemPrompt', () => {
       expect(text).toBe('v = literal {{sneaky}} inside!')
     })
   })
+
+  describe('progressive assembly (deferred sections)', () => {
+    it('emits deferred sections empty first and fills them in pending', async () => {
+      const ctx = new Context()
+      try {
+        await ctx.plugin(SystemPrompt)
+        ctx.systemPrompt.section({ name: 'fast', order: 10, text: 'fast section' })
+        let resolveDeferred!: (value: string) => void
+        const deferred = new Promise<string>((resolve) => { resolveDeferred = resolve })
+        ctx.systemPrompt.section({ name: 'slow', order: 20, defer: true, text: async () => await deferred })
+        const { prompt, pending } = await ctx.systemPrompt.assembleProgressive()
+        // The skeleton renders only the fast section; the deferred section is empty.
+        expect(renderPrompt(prompt)).toBe(`${IDENTITY}\n\nfast section`)
+        resolveDeferred('slow section')
+        const full = await pending
+        expect(renderPrompt(full)).toBe(`${IDENTITY}\n\nfast section\n\nslow section`)
+      } finally {
+        await ctx.fiber.dispose()
+      }
+    })
+
+    it('resolves a deferred section with a static provider', async () => {
+      const ctx = new Context()
+      try {
+        await ctx.plugin(SystemPrompt)
+        ctx.systemPrompt.section({ name: 'fast', order: 10, text: 'fast' })
+        ctx.systemPrompt.section({ name: 'slow', order: 20, defer: true, text: 'slow' })
+        const { prompt, pending } = await ctx.systemPrompt.assembleProgressive()
+        expect(renderPrompt(prompt)).toBe(`${IDENTITY}\n\nfast`)
+        expect(renderPrompt(await pending)).toBe(`${IDENTITY}\n\nfast\n\nslow`)
+      } finally {
+        await ctx.fiber.dispose()
+      }
+    })
+
+    it('degenerates to one assembly when nothing is deferred', async () => {
+      const ctx = new Context()
+      try {
+        await ctx.plugin(SystemPrompt)
+        ctx.systemPrompt.section({ name: 'fast', order: 10, text: 'fast' })
+        const { prompt, pending } = await ctx.systemPrompt.assembleProgressive()
+        expect(renderPrompt(prompt)).toBe(`${IDENTITY}\n\nfast`)
+        expect(pending).toBeUndefined()
+      } finally {
+        await ctx.fiber.dispose()
+      }
+    })
+
+    it('awaits deferred sections in a normal assemble (backward compatible)', async () => {
+      const ctx = new Context()
+      try {
+        await ctx.plugin(SystemPrompt)
+        ctx.systemPrompt.section({ name: 'fast', order: 10, text: 'fast' })
+        ctx.systemPrompt.section({ name: 'slow', order: 20, defer: true, text: async () => 'slow' })
+        expect(renderPrompt(await ctx.systemPrompt.assemble())).toBe(`${IDENTITY}\n\nfast\n\nslow`)
+      } finally {
+        await ctx.fiber.dispose()
+      }
+    })
+
+    it('awaits an async provider for a non-deferred section', async () => {
+      const ctx = new Context()
+      try {
+        await ctx.plugin(SystemPrompt)
+        ctx.systemPrompt.section({ name: 'async', order: 10, text: async () => 'async text' })
+        expect(renderPrompt(await ctx.systemPrompt.assemble())).toBe(`${IDENTITY}\n\nasync text`)
+      } finally {
+        await ctx.fiber.dispose()
+      }
+    })
+
+    it('ignores defer on a complete section', async () => {
+      const ctx = new Context()
+      try {
+        await ctx.plugin(SystemPrompt)
+        ctx.systemPrompt.section({ name: 'complete', order: 10, text: 'complete prompt', complete: true, defer: true })
+        const { prompt, pending } = await ctx.systemPrompt.assembleProgressive()
+        expect(renderPrompt(prompt)).toBe('complete prompt')
+        expect(pending).toBeUndefined()
+      } finally {
+        await ctx.fiber.dispose()
+      }
+    })
+  })
 })

@@ -58,6 +58,8 @@ type PreparedStep =
     messages: UserMessage[]
     startsRequestSeries?: true
     assembly: PromptAssembly
+    /** Deferred sections still loading; resolves to the full assembly. */
+    pending?: Promise<PromptAssembly>
   }
 
 /** Remove adapter-derived values before plugins propose the next request config. */
@@ -118,6 +120,8 @@ export class ReactLoopAgent implements Agent {
   private readonly systemPrompt: SystemPromptProjection
   /** Identities fully frozen by this loop; weak references do not retain replaced history. */
   private readonly frozenMessages = new WeakSet<Message>()
+  /** Full assembly resolved from the turn's first progressive assembly; reused by later steps. */
+  private turnAssembly: PromptAssembly | undefined
 
   constructor(
     private loopCtx: Context,
@@ -269,7 +273,16 @@ export class ReactLoopAgent implements Agent {
     if (this.phase.kind !== 'running') throw new Error(`agent "${this.id}": pre-step outside running phase`)
     const signal = this.phase.abort.signal
     const claimed = this.inbox.claim(target, position.turn)
-    const assembly = await this.loopCtx.systemPrompt.assemble(assembleContextFor(this, signal))
+    let assembly: PromptAssembly
+    let pending: Promise<PromptAssembly> | undefined
+    if (this.turnAssembly !== undefined) {
+      // Later steps reuse the full assembly resolved during the turn's first step.
+      assembly = this.turnAssembly
+    } else {
+      const progressive = await this.loopCtx.systemPrompt.assembleProgressive(assembleContextFor(this, signal))
+      assembly = progressive.prompt
+      pending = progressive.pending
+    }
     signal.throwIfAborted()
     const sections = renderContextSections(assembly)
     const context = this.runtimeContext.project(joinContextSections(sections), sections)
@@ -282,7 +295,7 @@ export class ReactLoopAgent implements Agent {
     )
     signal.throwIfAborted()
     if (decision.kind === 'reject') return decision
-    return { ...decision, assembly }
+    return { ...decision, assembly, ...pending !== undefined ? { pending } : {} }
   }
 
   /** Whether the assembled tool schemas differ from the logged request header's. */
@@ -301,6 +314,7 @@ export class ReactLoopAgent implements Agent {
     const { signal } = phase.abort
     signal.throwIfAborted()
     const turn = phase.turn + 1
+    this.turnAssembly = undefined
     try {
       this.session.append('turn/start', { turn })
     } catch (error: unknown) {
@@ -401,7 +415,7 @@ export class ReactLoopAgent implements Agent {
     const { turn, step, abort: { signal } } = this.phase
     signal.throwIfAborted()
 
-    const { assembly } = decision
+    const { assembly, pending } = decision
     const renderedPrompt = renderPrompt(assembly)
     let firstAttempt = true
     while (true) {
@@ -528,6 +542,14 @@ export class ReactLoopAgent implements Agent {
           }, { surfaceOp: 'append' }).seq,
         )
         if (finish.kind === 'max-tokens') return { kind: 'max-tokens' }
+
+        // Resolve deferred (slow I/O) sections now that the skeleton prompt has
+        // already delivered the first token, and cache the full assembly so the
+        // following step admits the completed system prompt.
+        if (pending !== undefined) {
+          this.turnAssembly = await pending
+          signal.throwIfAborted()
+        }
 
         const toolCalls = message.content.filter(block => block.type === 'tool-call')
         if (toolCalls.length === 0) return { kind: 'completed' }
