@@ -1,0 +1,7 @@
+- insert:
+    - id: dsh-progressive-injection
+      name: '@deepseek-ai/dsh-progressive-injection-bundle'
+      config:
+        cwd: null
+        includeStatus: true
+        includeLastCommit: true

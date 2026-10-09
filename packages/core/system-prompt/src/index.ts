@@ -62,8 +62,10 @@ export interface PromptSection {
    * Static text or a provider evaluated at each assembly with that assembly's
    * {@link AssembleContext}. The text may reference `{{variable}}`s — they are
    * interpolated later, by {@link renderPrompt}, unless `interpolate` is false.
+   * A provider may return a `Promise` so slow I/O sections can load without
+   * blocking a progressive assembly (see {@link SystemPrompt.assembleProgressive}).
    */
-  readonly text: string | ((context: AssembleContext) => string)
+  readonly text: string | ((context: AssembleContext) => string | Promise<string>)
   /** Whether to interpolate prompt variables. Defaults to true; false preserves literal text. */
   readonly interpolate?: boolean
   /**
@@ -73,6 +75,13 @@ export interface PromptSection {
    * More than one effective complete section makes assembly fail.
    */
   readonly complete?: boolean
+  /**
+   * Mark a slow I/O section. A normal {@link SystemPrompt.assemble} awaits it
+   * like any other section; a {@link SystemPrompt.assembleProgressive} emits it
+   * empty in the first prompt and fills it in the returned `pending` assembly
+   * once its provider resolves. Ignored when `complete` is true.
+   */
+  readonly defer?: boolean
 }
 
 /** Dynamic model context materialized as a durable user-role snapshot. */
@@ -120,6 +129,23 @@ export interface PromptAssembly {
   contexts: AssembledContext[]
   tools: ToolSchema[]
   variables: Record<string, string | undefined>
+}
+
+/**
+ * A two-phase assembly for lowering time-to-first-token. `prompt` carries every
+ * non-deferred section immediately (deferred sections render as empty text); the
+ * `pending` promise resolves to the full assembly once every deferred section's
+ * provider completes.
+ */
+export interface ProgressivePromptAssembly {
+  /** The immediate assembly: deferred sections contribute empty text. */
+  readonly prompt: PromptAssembly
+  /**
+   * Resolves to the full assembly once every deferred section's provider
+   * completes, or `undefined` when nothing was deferred (so callers avoid an
+   * extra await tick on the hot path).
+   */
+  readonly pending: Promise<PromptAssembly> | undefined
 }
 
 const SECTION_ORDERS = {
@@ -367,6 +393,21 @@ type ToolProvider = (context: AssembleContext) => ToolProviderResult
 /** One prompt-variable provider stored in a prompt layer. */
 type VariableProvider = (context: AssembleContext) => string | undefined
 
+/** Evaluate a section text provider, which may be static, sync, or async. */
+function resolveText(text: PromptSection['text'], context: AssembleContext): string | Promise<string> {
+  return typeof text === 'function' ? text(context) : text
+}
+
+/** Shared inputs collected once for a full or progressive assembly. */
+interface PreparedPrompt {
+  scope: ScopeKey | undefined
+  sectionDefinitions: PromptSection[]
+  contextDefinitions: PromptContext[]
+  toolProviders: ToolProvider[]
+  runtimeContextSuppressed: boolean
+  variables: Record<string, string | undefined>
+}
+
 /** All prompt registrations owned by one global or scoped layer. */
 class PromptLayer implements ScopeLayer {
   readonly sections: NamedEntries<PromptSection>
@@ -546,16 +587,11 @@ export class SystemPrompt extends Service {
   }
 
   /**
-   * Assemble global and scoped providers, detach tool parameters, apply
-   * canonical ordering, then run the assembly waterfall. Scoped sections and
-   * variables shadow globals. The returned waterfall value is authoritative
-   * except that an effective complete section is restored afterwards as the
-   * sole prompt section.
-   * @param context - the optional scope and plugin-defined assembly fields.
-   * @returns the post-waterfall assembly with any complete prompt enforced.
+   * Collect the shared inputs of one assembly: scoped variables, ordered
+   * section and context definitions, tool providers, and whether runtime
+   * context is suppressed. Scoped sections and variables shadow globals.
    */
-  // Keep configuration failures on the declared asynchronous error path.
-  async assemble(context: AssembleContext = {}): Promise<PromptAssembly> {
+  private prepare(context: AssembleContext): PreparedPrompt {
     const scope = context.scope
     const scopeLayers = this.layers.chainLayers(scope)
     const runtimeContextSuppressed = !this.layers.global.runtimeContextSuppressors.isEmpty()
@@ -571,17 +607,46 @@ export class SystemPrompt extends Service {
         variables[name] = provider(context)
       }
     }
-    // Scoped sections shadow globals before the deterministic order sort.
     const sectionByName = this.layers.merge(scope, layer => layer.sections)
     const contextByName = this.layers.merge(scope, layer => layer.contexts)
-    // Validate order against pre-restriction names while collecting visible schemas.
-    const providers = [
+    const toolProviders = [
       ...this.layers.global.toolProviders.values(),
       ...scopeLayers.flatMap(layer => [...layer.toolProviders.values()]),
     ]
+    return {
+      scope,
+      sectionDefinitions: [...sectionByName.values()].sort(comparePromptSections),
+      contextDefinitions: [...contextByName.values()].sort((a, b) => a.order - b.order),
+      toolProviders,
+      runtimeContextSuppressed,
+      variables,
+    }
+  }
+
+  /** Reject more than one effective complete section before any assembly runs. */
+  private validateComplete(prepared: PreparedPrompt): void {
+    const completeSections = prepared.sectionDefinitions.filter(section => section.complete === true)
+    if (completeSections.length > 1) {
+      throw new Error(`multiple complete prompt sections are active: ${completeSections.map(section => JSON.stringify(section.name)).join(', ')}`)
+    }
+  }
+
+  /**
+   * Assemble the prepared inputs, detach tool parameters, apply canonical
+   * ordering, then run the assembly waterfall. Deferred sections render empty
+   * when `fillDeferred` is false and are resolved otherwise. The returned
+   * waterfall value is authoritative except that an effective complete section
+   * is restored afterwards as the sole prompt section.
+   */
+  private async buildAssembly(
+    prepared: PreparedPrompt,
+    context: AssembleContext,
+    fillDeferred: boolean,
+  ): Promise<PromptAssembly> {
+    // Validate order against pre-restriction names while collecting visible schemas.
     const collected: ToolSchema[] = []
     const knownNames = new Set<string>()
-    for (const provider of providers) {
+    for (const provider of prepared.toolProviders) {
       const result = provider(context)
       const schemas = result.schemas.map(({ name, description, parameters, deferLoading }): ToolSchema => ({
         name,
@@ -593,45 +658,77 @@ export class SystemPrompt extends Service {
       collected.push(...schemas)
       for (const name of acceptedKnownNames) knownNames.add(name)
     }
-    const sectionDefinitions = [...sectionByName.values()].sort(comparePromptSections)
-    const completeSections = sectionDefinitions.filter(section => section.complete === true)
-    if (completeSections.length > 1) {
-      throw new Error(`multiple complete prompt sections are active: ${completeSections.map(section => JSON.stringify(section.name)).join(', ')}`)
-    }
     let completeSection: AssembledSection | undefined
-    const sections = sectionDefinitions
-      .map((section) => {
-        const assembled = {
-          name: section.name,
-          text: typeof section.text === 'function' ? section.text(context) : section.text,
-          ...section.interpolate !== undefined ? { interpolate: section.interpolate } : {},
-        }
-        if (section.complete === true) completeSection = { ...assembled }
-        return assembled
-      })
+    const sections: AssembledSection[] = []
+    for (const section of prepared.sectionDefinitions) {
+      const deferred = section.defer === true && section.complete !== true
+      const text = deferred && !fillDeferred ? '' : await resolveText(section.text, context)
+      const assembled = {
+        name: section.name,
+        text,
+        ...section.interpolate !== undefined ? { interpolate: section.interpolate } : {},
+      }
+      if (section.complete === true) completeSection = { ...assembled }
+      sections.push(assembled)
+    }
     const assembly: PromptAssembly = {
       sections,
-      contexts: runtimeContextSuppressed
+      contexts: prepared.runtimeContextSuppressed
         ? []
-        : [...contextByName.values()]
-          .sort((a, b) => a.order - b.order)
-          .map(entry => ({
-            name: entry.name,
-            text: typeof entry.text === 'function' ? entry.text(context) : entry.text,
-          })),
+        : prepared.contextDefinitions.map(entry => ({
+          name: entry.name,
+          text: typeof entry.text === 'function' ? entry.text(context) : entry.text,
+        })),
       tools: orderTools(collected, this.toolOrder, knownNames),
-      variables,
+      variables: prepared.variables,
     }
     const transformed = await this.ctx.waterfall(
-      scopeTarget(this, scope), 'system-prompt/assemble', assembly, context,
+      scopeTarget(this, prepared.scope), 'system-prompt/assemble', assembly, context,
       () => Promise.resolve(assembly),
     )
-    if (completeSection === undefined && !runtimeContextSuppressed) return transformed
+    if (completeSection === undefined && !prepared.runtimeContextSuppressed) return transformed
     return {
       ...transformed,
       sections: completeSection === undefined ? transformed.sections : [completeSection],
-      contexts: runtimeContextSuppressed ? [] : transformed.contexts,
+      contexts: prepared.runtimeContextSuppressed ? [] : transformed.contexts,
     }
+  }
+
+  /**
+   * Assemble global and scoped providers, detach tool parameters, apply
+   * canonical ordering, then run the assembly waterfall. Scoped sections and
+   * variables shadow globals. The returned waterfall value is authoritative
+   * except that an effective complete section is restored afterwards as the
+   * sole prompt section.
+   * @param context - the optional scope and plugin-defined assembly fields.
+   * @returns the post-waterfall assembly with any complete prompt enforced.
+   */
+  // Keep configuration failures on the declared asynchronous error path.
+  async assemble(context: AssembleContext = {}): Promise<PromptAssembly> {
+    const prepared = this.prepare(context)
+    this.validateComplete(prepared)
+    return this.buildAssembly(prepared, context, true)
+  }
+
+  /**
+   * Two-phase assembly for lowering time-to-first-token. The returned `prompt`
+   * renders every non-deferred section immediately (deferred sections are
+   * empty), so a caller can send the skeleton without waiting on slow I/O
+   * sections. The returned `pending` resolves to the full assembly once every
+   * deferred section's provider completes.
+   * @param context - the optional scope and plugin-defined assembly fields.
+   */
+  async assembleProgressive(context: AssembleContext = {}): Promise<ProgressivePromptAssembly> {
+    const prepared = this.prepare(context)
+    this.validateComplete(prepared)
+    const hasDeferred = prepared.sectionDefinitions.some(section => section.defer === true && section.complete !== true)
+    if (!hasDeferred) {
+      const full = await this.buildAssembly(prepared, context, true)
+      return { prompt: full, pending: undefined }
+    }
+    const prompt = await this.buildAssembly(prepared, context, false)
+    const pending = this.buildAssembly(prepared, context, true)
+    return { prompt, pending }
   }
 }
 
