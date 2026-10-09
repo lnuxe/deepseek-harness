@@ -24,7 +24,7 @@ describe('computeDAGLayout', () => {
     expect(byId.get('a')!.rank).toBe(0)
     expect(byId.get('b')!.rank).toBe(1)
     expect(byId.get('c')!.rank).toBe(2)
-    expect(edges.every(e => e.isBackEdge === false)).toBe(true)
+    expect(edges.every(e => !e.isBackEdge)).toBe(true)
     expect(ranks).toHaveLength(3)
   })
 

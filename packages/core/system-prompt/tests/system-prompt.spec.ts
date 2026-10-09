@@ -707,6 +707,7 @@ describe('SystemPrompt', () => {
         expect(renderPrompt(prompt)).toBe(`${IDENTITY}\n\nfast section`)
         resolveDeferred('slow section')
         const full = await pending
+        if (!full) throw new Error('deferred assembly must resolve')
         expect(renderPrompt(full)).toBe(`${IDENTITY}\n\nfast section\n\nslow section`)
       } finally {
         await ctx.fiber.dispose()
@@ -721,7 +722,9 @@ describe('SystemPrompt', () => {
         ctx.systemPrompt.section({ name: 'slow', order: 20, defer: true, text: 'slow' })
         const { prompt, pending } = await ctx.systemPrompt.assembleProgressive()
         expect(renderPrompt(prompt)).toBe(`${IDENTITY}\n\nfast`)
-        expect(renderPrompt(await pending)).toBe(`${IDENTITY}\n\nfast\n\nslow`)
+        const full = await pending
+        if (!full) throw new Error('deferred assembly must resolve')
+        expect(renderPrompt(full)).toBe(`${IDENTITY}\n\nfast\n\nslow`)
       } finally {
         await ctx.fiber.dispose()
       }

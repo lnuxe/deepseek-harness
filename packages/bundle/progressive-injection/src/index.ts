@@ -10,16 +10,28 @@
  * Requires the progressive-assembly core change (feat/progressive-injection):
  * `PromptSection.defer`, `SystemPrompt.assembleProgressive`, and the agent
  * loop's skeleton-then-full admission.
+ *
+ * @module @deepseek-ai/dsh-progressive-injection-bundle
  */
+
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-system-prompt'
 
 const execFileAsync = promisify(execFile)
 
 export const name = '@deepseek-ai/dsh-progressive-injection-bundle'
 
+/** Plugin config, mirrored by `cordis.patch.yml`. */
+export interface Config {
+  cwd?: string | null
+  includeStatus?: boolean
+  includeLastCommit?: boolean
+}
+
 /** One git invocation, bounded and cancellable through the assembly signal. */
-async function runGit(cwd, args, signal) {
+async function runGit(cwd: string, args: string[], signal?: AbortSignal): Promise<string> {
   const { stdout } = await execFileAsync('git', args, {
     cwd,
     signal,
@@ -30,10 +42,10 @@ async function runGit(cwd, args, signal) {
   return stdout
 }
 
-async function renderGitStatus(config, signal) {
-  const cwd = (config && config.cwd) || process.cwd()
-  const includeStatus = !config || config.includeStatus !== false
-  const includeLastCommit = !config || config.includeLastCommit !== false
+async function renderGitStatus(config: Config, signal?: AbortSignal): Promise<string> {
+  const cwd = config.cwd || process.cwd()
+  const includeStatus = config.includeStatus !== false
+  const includeLastCommit = config.includeLastCommit !== false
   try {
     const parts = ['## Git status (progressive)']
     const branch = await runGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'], signal)
@@ -59,14 +71,14 @@ async function renderGitStatus(config, signal) {
   }
 }
 
-export function apply(ctx, config = {}) {
+export function apply(ctx: Context, config: Config = {}): void {
   ctx.inject(['systemPrompt'], (promptCtx) => {
     promptCtx.systemPrompt.section({
       name: 'progressive-injection:git-status',
       order: promptCtx.systemPrompt.getSectionOrder('HARNESS_SOURCE'),
       interpolate: false,
       defer: true,
-      text: ({ agent, signal }) => renderGitStatus(config, signal),
+      text: ({ signal }) => renderGitStatus(config, signal),
     })
   })
 }
