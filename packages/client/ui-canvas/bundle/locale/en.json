@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Canvas",
+    "description": "Opens a sandboxed Canvas panel beside the chat, running compiled .canvas.tsx artifacts with the DSH Canvas SDK."
+  }
+}
