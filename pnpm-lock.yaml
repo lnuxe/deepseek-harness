@@ -2293,6 +2293,8 @@ importers:
         specifier: workspace:*
         version: link:../../session-query/session-query
 
+  packages/bundle/progressive-injection: {}
+
   packages/bundle/sdk-app:
     dependencies:
       '@deepseek-ai/dsh-cmdline':
