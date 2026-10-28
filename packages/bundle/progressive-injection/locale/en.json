@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Progressive Injection",
+    "description": "Defers slow git-status prompt sections past the skeleton assembly, lowering time-to-first-token."
+  }
+}
