@@ -22,11 +22,15 @@
     "./package.json": "./package.json"
   },
   "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "workspace:~"
+  },
   "devDependencies": {
     "@types/react": "~18.3.1",
     "@types/react-dom": "~18.3.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "@deepseek-ai/cordis": "workspace:~"
   },
   "files": [
     "lib/index.js",
