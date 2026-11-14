@@ -1,0 +1,43 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write packages/bundle/progressive-injection/README.md
+/:
+  en: 98a2e44a40ec245f
+  zh: 0053bd00f925fc46
+/deepseek-ai-dsh-progressive-injection-bundle:
+  en: d1ca09f1b7f91053
+  zh: 3e05a83449240f21
+/deepseek-ai-dsh-progressive-injection-bundle/summary:
+  en: fb80b27845cf1be0
+  zh: b3697cd293f9adc5
+/deepseek-ai-dsh-progressive-injection-bundle/table-of-contents:
+  en: d152484eb41ac6b4
+  zh: 09388d293f9be9cb
+/deepseek-ai-dsh-progressive-injection-bundle/use-this-package:
+  en: bbff250eba0f1b89
+  zh: 0a618f05cc88ee2b
+/deepseek-ai-dsh-progressive-injection-bundle/use-this-package/install-into-a-profile:
+  en: 54ef4c6fd77fb935
+  zh: 594deadd97bd5bce
+/deepseek-ai-dsh-progressive-injection-bundle/use-this-package/what-you-get:
+  en: 2a77be88a03dc2e2
+  zh: e77d0668ee5bb3d4
+/deepseek-ai-dsh-progressive-injection-bundle/understand-the-implementation:
+  en: aaae19d7f218e45e
+  zh: c68c4d70fcd1203c
+/deepseek-ai-dsh-progressive-injection-bundle/further-exploration:
+  en: 13dad9486ecd8639
+  zh: eb72328cb2331254
+/deepseek-ai-dsh-progressive-injection-bundle/model-experience:
+  en: c42cd55d5f5cc6be
+  zh: a49ec68c7d91c1e9
+/deepseek-ai-dsh-progressive-injection-bundle/model-experience/kv-cache-effect:
+  en: fae8f72923bd39c1
+  zh: aa3cc707f2694871
+/deepseek-ai-dsh-progressive-injection-bundle/known-limitations-and-deferred-work:
+  en: ec879b3acacdade9
+  zh: 34072c1ebf8ae365
+/deepseek-ai-dsh-progressive-injection-bundle/known-limitations-and-deferred-work/dev-note:
+  en: e67f633dc6fe7773
+  zh: 8ec3e73528ddb1a6
